@@ -201,6 +201,13 @@ class TestDopeCliffordCircuit(unittest.TestCase):
         with self.assertRaises(ValueError):
             dope_clifford_circuit(circuit, num_sites=-1)
 
+    def test_draw_may_exhaust_pool(self):
+        """A subset of a fixed point can prune to fewer sites than requested, which raises."""
+        circuit = random_clifford(2, seed=116).to_circuit()  # six valid sites
+        with self.assertRaisesRegex(ValueError, "Could only draw"):
+            for seed in range(100):  # some seeds draw three sites that prune to two
+                dope_clifford_circuit(circuit, num_sites=3, seed=seed)
+
     def test_only_rz_gates_inserted(self):
         """The doped circuit is the original instruction sequence with only rz gates added."""
         circuit = _paper_ansatz(4, seed=3)
