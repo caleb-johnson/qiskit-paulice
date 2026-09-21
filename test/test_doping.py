@@ -26,7 +26,7 @@ from qiskit.quantum_info import (
     Statevector,
     random_clifford,
 )
-from qiskit_paulice import CheckedCircuit, Wire, dope_clifford_circuit
+from qiskit_paulice import CheckedCircuit, Wire
 from qiskit_paulice.checks import add_pauli_checks
 from qiskit_paulice.noise_models import NoiseModel
 
@@ -117,8 +117,14 @@ def _checked_circuit() -> CheckedCircuit:
     return add_pauli_checks(circuit, [1], noise, seed=0)[-1]
 
 
+def _dope(circuit: QuantumCircuit, *args, **kwargs) -> tuple[QuantumCircuit, list[Wire]]:
+    """Dope a circuit without checks, returning the doped circuit and its wires."""
+    doped = CheckedCircuit(circuit).dope(*args, **kwargs)
+    return doped.circuit, list(doped.doped_wires)
+
+
 class TestDopeCliffordCircuit(unittest.TestCase):
-    """Tests for :func:`dope_clifford_circuit`."""
+    """Tests for :meth:`CheckedCircuit.dope`."""
 
     def _assert_irreducible(self, circuit: QuantumCircuit, sites: list[Wire]):
         """Independently verify that no pruning rewrite applies to the returned rotations."""
@@ -149,7 +155,7 @@ class TestDopeCliffordCircuit(unittest.TestCase):
     def test_changes_distribution_and_injects_magic(self):
         """Doping alters the sampled distribution and injects magic."""
         circuit = _paper_ansatz(5, seed=1)
-        doped, sites = dope_clifford_circuit(circuit)
+        doped, sites = _dope(circuit)
         self.assertGreater(len(sites), 0)
         self.assertFalse(
             np.allclose(
@@ -167,51 +173,51 @@ class TestDopeCliffordCircuit(unittest.TestCase):
         diagonal.s(0)
         diagonal.cz(0, 1)
         for circuit in (h_only, diagonal):
-            doped, sites = dope_clifford_circuit(circuit)
+            doped, sites = _dope(circuit)
             self.assertEqual(sites, [])
             self.assertEqual(doped.count_ops().get("rz", 0), 0)
         with self.assertRaises(ValueError):
-            dope_clifford_circuit(diagonal, num_sites=1)
+            _dope(diagonal, num_sites=1)
 
     def test_sites_are_irreducible(self):
         """No pruning rewrite of the reference applies to the returned site set."""
         for seed in range(3):
             circuit = random_clifford(4, seed=seed).to_circuit()
-            _, sites = dope_clifford_circuit(circuit)
+            _, sites = _dope(circuit)
             self.assertGreater(len(sites), 0, msg=f"seed {seed}")
             self._assert_irreducible(circuit, sites)
         circuit = _paper_ansatz(4, seed=2)
-        _, sites = dope_clifford_circuit(circuit)
+        _, sites = _dope(circuit)
         self._assert_irreducible(circuit, sites)
 
     def test_num_sites_and_seed(self):
         """Random subsets are exact in size, seed-reproducible, and themselves irreducible."""
         circuit = _paper_ansatz(4, seed=0)
-        _, all_sites = dope_clifford_circuit(circuit)
+        _, all_sites = _dope(circuit)
         self.assertGreater(len(all_sites), 3)
-        doped, sites = dope_clifford_circuit(circuit, num_sites=3, seed=42)
+        doped, sites = _dope(circuit, num_sites=3, seed=42)
         self.assertEqual(len(sites), 3)
         self.assertEqual(doped.count_ops()["rz"], 3)
         self.assertTrue(set(sites) <= set(all_sites))
         self._assert_irreducible(circuit, sites)
-        _, again = dope_clifford_circuit(circuit, num_sites=3, seed=42)
+        _, again = _dope(circuit, num_sites=3, seed=42)
         self.assertEqual(sites, again)
         with self.assertRaises(ValueError):
-            dope_clifford_circuit(circuit, num_sites=len(all_sites) + 1)
+            _dope(circuit, num_sites=len(all_sites) + 1)
         with self.assertRaises(ValueError):
-            dope_clifford_circuit(circuit, num_sites=-1)
+            _dope(circuit, num_sites=-1)
 
     def test_draw_may_exhaust_pool(self):
         """A subset of a fixed point can prune to fewer sites than requested, which raises."""
         circuit = random_clifford(2, seed=116).to_circuit()  # six valid sites
         with self.assertRaisesRegex(ValueError, "Could only draw"):
             for seed in range(100):  # some seeds draw three sites that prune to two
-                dope_clifford_circuit(circuit, num_sites=3, seed=seed)
+                _dope(circuit, num_sites=3, seed=seed)
 
     def test_only_rz_gates_inserted(self):
         """The doped circuit is the original instruction sequence with only rz gates added."""
         circuit = _paper_ansatz(4, seed=3)
-        doped, sites = dope_clifford_circuit(circuit, num_sites=3, seed=0)
+        doped, sites = _dope(circuit, num_sites=3, seed=0)
         stripped = [
             (inst.name, tuple(doped.find_bit(q).index for q in inst.qubits))
             for inst in doped
@@ -228,14 +234,14 @@ class TestDopeCliffordCircuit(unittest.TestCase):
         circuit = QuantumCircuit(1)
         circuit.rx(0.3, 0)
         with self.assertRaises(ValueError):
-            dope_clifford_circuit(circuit)
+            _dope(circuit)
 
     def test_barriers_ignored(self):
         """Barriers are transparent to the propagation and preserved in the output."""
         circuit = _paper_ansatz(3, seed=1)
         circuit.barrier()
         circuit.sx(0)
-        doped, sites = dope_clifford_circuit(circuit)
+        doped, sites = _dope(circuit)
         self.assertGreater(len(sites), 0)
         self.assertIn("barrier", doped.count_ops())
         self.assertEqual(doped.count_ops()["rz"], len(sites))
@@ -246,7 +252,7 @@ class TestDopeCliffordCircuit(unittest.TestCase):
         circuit = _paper_ansatz(3, seed=1)
         circuit.measure_all()
         measure_pos = _measure_positions(circuit)
-        doped, sites = dope_clifford_circuit(circuit)
+        doped, sites = _dope(circuit)
         self.assertGreater(len(sites), 0)
         self.assertEqual(doped.count_ops()["measure"], 3)
         self.assertEqual(doped.count_ops()["rz"], len(sites))
@@ -254,7 +260,7 @@ class TestDopeCliffordCircuit(unittest.TestCase):
             self.assertLessEqual(_position(site), measure_pos[site.qubit])
         circuit.x(0)
         with self.assertRaises(ValueError):
-            dope_clifford_circuit(circuit)
+            _dope(circuit)
 
 
 class TestCheckedCircuitDoping(unittest.TestCase):
@@ -290,7 +296,8 @@ class TestCheckedCircuitDoping(unittest.TestCase):
         """Doping changes the payload distribution but never breaks a check."""
         checked = _checked_circuit()
         self.assertEqual(len(checked.check_qubits), 1)
-        doped, sites = dope_clifford_circuit(checked)
+        doped = checked.dope()
+        sites = list(doped.doped_wires)
         self.assertGreater(len(sites), 0)
         self._assert_code_preserved(checked, doped, sites)
 
@@ -300,7 +307,8 @@ class TestCheckedCircuitDoping(unittest.TestCase):
         original = _syndrome_values(checked, checked.circuit)
         for wires in ("all", "after_entangling", "before_entangling"):
             with self.subTest(wires=wires):
-                doped, sites = dope_clifford_circuit(checked, wires=wires, angle=None)
+                doped = checked.dope(wires=wires, angle=None)
+                sites = doped.doped_wires
                 self.assertGreater(len(sites), 0)
                 angles = np.random.default_rng(0).uniform(0, 2 * np.pi, len(sites))
                 bound = doped.circuit.assign_parameters(angles)
@@ -315,7 +323,7 @@ class TestHardwareStyle(unittest.TestCase):
         circuit = _paper_ansatz(5, seed=1)
         for wires, offset in (("after_entangling", -1), ("before_entangling", 0)):
             with self.subTest(wires=wires):
-                doped, sites = dope_clifford_circuit(circuit, wires=wires)
+                doped, sites = _dope(circuit, wires=wires)
                 self.assertGreater(len(sites), 0)
                 self.assertEqual(doped.count_ops()["rz"], len(sites))
                 for site in sites:
@@ -326,13 +334,13 @@ class TestHardwareStyle(unittest.TestCase):
     def test_invalid_wires(self):
         """An unknown ``wires`` value is rejected."""
         with self.assertRaisesRegex(ValueError, "wires must be"):
-            dope_clifford_circuit(_paper_ansatz(3, seed=1), wires="between")
+            _dope(_paper_ansatz(3, seed=1), wires="between")
 
     def test_angle(self):
         """Sites are angle-independent; a Clifford angle yields a Clifford doped circuit."""
         circuit = _paper_ansatz(4, seed=1)
-        default, sites = dope_clifford_circuit(circuit)
-        s_doped, s_sites = dope_clifford_circuit(circuit, angle=np.pi / 2)
+        default, sites = _dope(circuit)
+        s_doped, s_sites = _dope(circuit, angle=np.pi / 2)
         self.assertEqual(s_sites, sites)
         self.assertEqual(
             [inst.operation.params[0] for inst in s_doped.data if inst.operation.name == "rz"],
@@ -345,9 +353,9 @@ class TestHardwareStyle(unittest.TestCase):
     def test_parametric_template(self):
         """One template reproduces the default doping at pi/4 and the base circuit at 0."""
         circuit = _paper_ansatz(4, seed=1)
-        template, sites = dope_clifford_circuit(circuit, angle=None)
+        template, sites = _dope(circuit, angle=None)
         self.assertEqual(len(template.parameters), len(sites))
-        t_doped, t_sites = dope_clifford_circuit(circuit)
+        t_doped, t_sites = _dope(circuit)
         self.assertEqual(sites, t_sites)
         bound = template.assign_parameters([np.pi / 4] * len(sites))
         self.assertTrue(Statevector(bound).equiv(Statevector(t_doped)))

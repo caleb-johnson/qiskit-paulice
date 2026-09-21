@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import cached_property
 from itertools import groupby
 from typing import Any, Literal, NamedTuple
@@ -32,6 +32,7 @@ from ._internal import Metric as _Metric
 from ._internal import NoiseModel as _RustNoiseModel
 from ._internal.conversion import convert_noise_model as _convert_noise_model
 from ._internal.conversion import convert_to_rustiq_circuit as _convert_to_rustiq_circuit
+from ._internal.doping import dope_circuit as _dope_circuit
 from ._internal.utils import build_check_picker as _build_check_picker
 from .noise_models import NoiseModel
 
@@ -51,12 +52,12 @@ BOXING_DEFAULTS: dict[str, Any] = {
 
 
 class Wire(NamedTuple):
-    """A wire of a circuit: one qubit's timeline directly after one instruction.
+    """Description of a timespan between two consecutive gates in a quantum circuit.
 
     Attributes:
         qubit: Index of the qubit.
-        after_instruction: Index (into ``circuit.data``) of the instruction the wire follows;
-            ``None`` is the qubit's input wire.
+        after_instruction: Index into ``QuantumCircuit.data`` of the instruction the wire follows.
+            ``None`` denotes the qubit's input wire.
     """
 
     qubit: int
@@ -122,6 +123,8 @@ class CheckedCircuit:
             together to give that check's syndrome bit.
         cost: The value of the cost function with respect to the checks in ``circuit``
         cost_metric: The metric used to evaluate check quality (``gamma`` or ``LER``)
+        doped_wires: The wires holding doping rotations inserted by :meth:`dope`, sorted by
+            circuit position. Empty if ``circuit`` is not doped.
     """
 
     circuit: QuantumCircuit
@@ -130,6 +133,7 @@ class CheckedCircuit:
     check_support: tuple[tuple[int, ...], ...] = ()
     cost: float | None = None
     cost_metric: str | None = None
+    doped_wires: tuple[Wire, ...] = ()
 
     def __post_init__(self) -> None:
         """Coerce mutable sequence inputs to tuples."""
@@ -310,6 +314,50 @@ class CheckedCircuit:
             check_trigger_stderrs=tuple(_stderr(float(p), shots) for p in triggers),
             shots=shots,
         )
+
+    def dope(
+        self,
+        num_sites: int | None = None,
+        *,
+        wires: Literal["all", "after_entangling", "before_entangling"] = "all",
+        angle: float | None = np.pi / 4,
+        seed: int | np.random.Generator | None = None,
+    ) -> CheckedCircuit:
+        r"""Dope the circuit with ``RZ`` rotations.
+
+        Rotations are inserted on wires where each one is irreducible, following the site
+        selection of `arXiv:2607.25941 <https://arxiv.org/abs/2607.25941>`_, Sec. S1.3 (of
+        two equivalent rotations, the earliest is kept), and only on wires that preserve
+        every check, so post-selection is unaffected. A circuit without checks is doped as
+        ``CheckedCircuit(circuit).dope()``.
+
+        Args:
+            num_sites: Number of sites to dope, drawn at random from the valid sites and
+                pruned so that the drawn subset is itself irreducible; ``None`` uses every
+                valid site.
+            wires: Candidate wires: ``"all"`` wire segments, or only those directly
+                ``"after_entangling"`` or ``"before_entangling"`` a multi-qubit gate, one
+                per qubit per entangling layer (the reference uses the former).
+            angle: Rotation angle of every inserted ``rz``; the default :math:`\pi/4` is a
+                ``T`` gate, and a Clifford angle such as :math:`\pi/2` keeps the circuit
+                Clifford. ``None`` inserts ``rz(dope[i])`` at ``doped_wires[i]`` instead:
+                one template covering every doping configuration, each of which preserves
+                the code.
+            seed: Seed or generator for the random site selection.
+
+        Returns:
+            A copy with the rotations inserted and :attr:`doped_wires` set.
+
+        Raises:
+            ValueError: :attr:`circuit` contains a non-Clifford instruction or a
+                non-terminal measurement, ``wires`` is not one of the allowed values,
+                ``num_sites`` is out of range, or no irreducible subset of that size could
+                be drawn.
+        """
+        doped, sites = _dope_circuit(
+            self.circuit, self.check_qubits, self.check_support, num_sites, wires, angle, seed
+        )
+        return replace(self, circuit=doped, doped_wires=tuple(Wire(*site) for site in sites))
 
     def box(
         self,

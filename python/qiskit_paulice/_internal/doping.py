@@ -10,86 +10,36 @@
 # copyright notice, and modified files need to carry a notice indicating
 # that they have been altered from the originals.
 
-"""RZ-gate doping of Clifford circuits."""
+"""Implementation of :meth:`.CheckedCircuit.dope`."""
 
 from __future__ import annotations
-
-from dataclasses import replace
-from typing import Literal
 
 import numpy as np
 from qiskit.circuit import ParameterVector, QuantumCircuit
 from qiskit.exceptions import QiskitError
 from qiskit.quantum_info import Clifford, PauliList
 
-from .checked_circuit import CheckedCircuit, Wire
 
-
-def dope_clifford_circuit(
-    circuit: QuantumCircuit | CheckedCircuit,
-    num_sites: int | None = None,
-    *,
-    wires: Literal["all", "after_entangling", "before_entangling"] = "all",
-    angle: float | None = np.pi / 4,
-    seed: int | np.random.Generator | None = None,
-) -> tuple[QuantumCircuit, list[Wire]] | tuple[CheckedCircuit, list[Wire]]:
-    r"""Dope a Clifford circuit with ``RZ`` rotations.
-
-    Each candidate wire is classified by conjugating the ``Z`` generator of a rotation placed
-    there through the surrounding Clifford gates
-    (`arXiv:2607.25941 <https://arxiv.org/abs/2607.25941>`_, Sec. S1.3). Every wire segment
-    is a candidate, and the reference's three pruning rewrites are iterated to a fixed
-    point: remove a rotation that commutes with all previous rotations and back-propagates
-    to a diagonal at the input (it acts trivially on :math:`|0^n\rangle`), or commutes with
-    all following rotations and forward-propagates to a diagonal at the output (it is
-    invisible to sampling); merge equal-generator pairs that commute with every rotation
-    between them, keeping the earliest (the reference removes one at random). Each returned
-    site therefore contributes an irreducible rotation, which injects magic for any
-    non-Clifford ``angle``.
-
-    A :class:`.CheckedCircuit` input restricts sites to payload wires where a ``Z`` error is
-    undetected by every check (cf. :attr:`.CheckedCircuit.uncovered_paulis`), so all
-    syndromes remain deterministic and post-selection is unaffected. A new
-    :class:`.CheckedCircuit` with the same check metadata is returned.
-
-    Args:
-        circuit: The Clifford circuit to dope, or a :class:`.CheckedCircuit` whose spacetime
-            code the doping must preserve. Barriers and terminal measurements are ignored;
-            sites past a qubit's measurement are excluded.
-        num_sites: Number of sites to dope, drawn uniformly from the valid sites;
-            ``None`` uses every valid site. A drawn subset may itself be further reducible;
-            pruned-away draws are redrawn until ``num_sites`` irreducible sites remain.
-        wires: The candidate wires. ``"all"`` considers every wire segment;
-            ``"after_entangling"`` only the wires directly following a multi-qubit gate,
-            one per qubit per entangling layer, as in the reference; ``"before_entangling"``
-            only the wires directly preceding one. The two entangling rules differ only in
-            which side of the intervening single-qubit gates a rotation sits.
-        angle: Rotation angle of every inserted ``rz``; the default :math:`\pi/4` is a
-            ``T`` gate. ``None`` inserts ``rz(dope[i])`` at ``sites[i]`` instead: one
-            template covers every doping configuration (:math:`\pi/4` = ``T``,
-            :math:`\pi/2` = ``S``, :math:`\pi` = ``Z``, ``0`` = identity), and every
-            assignment preserves the code of a :class:`.CheckedCircuit`.
-        seed: Seed or generator for the random site selection.
+def dope_circuit(
+    circuit: QuantumCircuit,
+    check_qubits: tuple[int, ...],
+    check_support: tuple[tuple[int, ...], ...],
+    num_sites: int | None,
+    wires: str,
+    angle: float | None,
+    seed: int | np.random.Generator | None,
+) -> tuple[QuantumCircuit, list[tuple[int, int | None]]]:
+    """Dope ``circuit``; see :meth:`.CheckedCircuit.dope` for the arguments.
 
     Returns:
-            * **QuantumCircuit | CheckedCircuit** -- A copy of ``circuit`` with the rotations
-              inserted
-            * **list[Wire]** -- The doped wires, sorted by circuit position
-
-    Raises:
-        ValueError: ``circuit`` contains a non-Clifford instruction or a non-terminal
-            measurement, ``wires`` is not one of the allowed values, ``num_sites`` is out
-            of range, or no irreducible subset of that size could be drawn.
+        The doped circuit and its doped wires as ``(qubit, after_instruction)`` pairs,
+        sorted by circuit position.
     """
     if wires not in ("all", "after_entangling", "before_entangling"):
         raise ValueError(
             f"wires must be 'all', 'after_entangling', or 'before_entangling', not {wires!r}."
         )
-    checked = None
-    if isinstance(circuit, CheckedCircuit):
-        checked = circuit
-        circuit = circuit.circuit
-    site_qubits = set(range(circuit.num_qubits)) - set(checked.check_qubits if checked else ())
+    site_qubits = set(range(circuit.num_qubits)) - set(check_qubits)
     positions, qubits, gens, full_clifford = _sweep_wire_segments(circuit, site_qubits, wires)
 
     # The back-propagation of a generator P to the input is C^dag P C for the whole-circuit
@@ -101,7 +51,7 @@ def dope_clifford_circuit(
     # conjugation through the suffix, that is the commutation of the forward-propagated
     # generator with the check's syndrome operator, a Z-product on its support.
     active = np.ones(len(gens), dtype=bool)
-    for support in checked.check_support if checked else ():
+    for support in check_support:
         active &= gens.x[:, list(support)].sum(axis=1) % 2 == 0
     _prune_to_fixpoint(gens, input_diagonal, output_diagonal, active)
     valid = [int(i) for i in np.flatnonzero(active)]
@@ -142,29 +92,23 @@ def dope_clifford_circuit(
         if position < len(circuit.data):
             doped.append(circuit.data[position])
 
-    sites = [Wire(qubit, position - 1 if position else None) for position, qubit in chosen]
-    if checked is not None:
-        return replace(checked, circuit=doped), sites
-    return doped, sites
+    return doped, [(qubit, position - 1 if position else None) for position, qubit in chosen]
 
 
 def _sweep_wire_segments(
     circuit: QuantumCircuit, site_qubits: set[int], wires: str
 ) -> tuple[np.ndarray, np.ndarray, PauliList, Clifford]:
-    """Enumerate candidate sites, one per wire segment, with output-propagated generators.
+    """Enumerate candidate wire segments with their generators conjugated to the output.
 
-    Sweeps the wire boundaries backward, maintaining the suffix Clifford ``S``; stabilizer
-    row ``q`` of its tableau is the forward propagation ``S Z_q S^dag``. All boundaries of a
-    wire segment (a maximal gate-free run on one qubit) share one generator with no rotation
-    between them, so one boundary represents it exhaustively. Segments past a terminal
-    measurement are skipped; ``wires`` selects every segment (``"all"``) or only those
+    A backward pass keeps the Clifford of all gates after the current one; stabilizer row
+    ``q`` of its tableau is the image of ``Z_q``. One boundary represents each gate-free
+    segment. Segments past a terminal measurement are skipped; ``wires`` restricts to those
     directly following (``"after_entangling"``) or preceding (``"before_entangling"``) a
     multi-qubit gate.
 
     Returns:
         Time-sorted ``(positions, qubits, gens, full_clifford)``: a rotation at candidate ``i``
-        precedes ``circuit.data[positions[i]]`` on ``qubits[i]`` and has generator
-        ``gens[i]`` at the circuit output; ``full_clifford`` is the whole circuit's Clifford.
+        precedes ``circuit.data[positions[i]]`` on ``qubits[i]`` with output image ``gens[i]``.
 
     Raises:
         ValueError: on a non-Clifford instruction or a non-terminal measurement.
@@ -230,7 +174,7 @@ def _prune_to_fixpoint(
     output_diagonal: np.ndarray,
     active: np.ndarray,
 ) -> None:
-    """Iterate the pruning rewrites of :func:`dope_clifford_circuit` on ``active`` in place.
+    """Iterate the pruning rewrites of :meth:`.CheckedCircuit.dope` on ``active`` in place.
 
     Candidates must be time-sorted; "previous" and "following" refer to active candidates.
     """
