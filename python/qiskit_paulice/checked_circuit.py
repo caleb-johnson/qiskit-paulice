@@ -50,6 +50,19 @@ BOXING_DEFAULTS: dict[str, Any] = {
 :func:`~samplomatic.transpiler.generate_boxing_pass_manager`, before ``**kwargs`` overrides."""
 
 
+class Wire(NamedTuple):
+    """A wire of a circuit: one qubit's timeline directly after one instruction.
+
+    Attributes:
+        qubit: Index of the qubit.
+        after_instruction: Index (into ``circuit.data``) of the instruction the wire follows;
+            ``None`` is the qubit's input wire.
+    """
+
+    qubit: int
+    after_instruction: int | None
+
+
 class UncoveredPauli(NamedTuple):
     """A spacetime location at which a single qubit Pauli error is undetectable by the set of checks.
 

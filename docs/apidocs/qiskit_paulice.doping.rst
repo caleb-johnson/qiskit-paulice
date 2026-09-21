@@ -10,5 +10,3 @@ Doping (:mod:`qiskit_paulice.doping`)
 .. currentmodule:: qiskit_paulice.doping
 
 .. autofunction:: dope_clifford_circuit
-.. autoclass:: DopingSite
-   :exclude-members: qubit, after_instruction

@@ -4,4 +4,5 @@ features:
     Added the new :func:`qiskit_paulice.doping.dope_clifford_circuit` function, which dopes a
     Clifford circuit, or a :class:`qiskit_paulice.CheckedCircuit` while preserving its
     spacetime code, with irreducible ``RZ`` rotations at sites selected as in
-    `arXiv:2607.25941 <https://arxiv.org/abs/2607.25941>`__, Sec. S1.3.
+    `arXiv:2607.25941 <https://arxiv.org/abs/2607.25941>`__, Sec. S1.3. Doped sites are
+    returned as instances of the new :class:`qiskit_paulice.Wire`.

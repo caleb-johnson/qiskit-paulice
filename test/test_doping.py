@@ -26,7 +26,7 @@ from qiskit.quantum_info import (
     Statevector,
     random_clifford,
 )
-from qiskit_paulice import CheckedCircuit, DopingSite, dope_clifford_circuit
+from qiskit_paulice import CheckedCircuit, Wire, dope_clifford_circuit
 from qiskit_paulice.checks import add_pauli_checks
 from qiskit_paulice.noise_models import NoiseModel
 
@@ -57,7 +57,7 @@ def _paper_ansatz(num_qubits: int, seed: int) -> QuantumCircuit:
     return circuit
 
 
-def _position(site: DopingSite) -> int:
+def _position(site: Wire) -> int:
     """The number of instructions preceding a site's wire boundary."""
     return 0 if site.after_instruction is None else site.after_instruction + 1
 
@@ -82,7 +82,7 @@ def _split(circuit: QuantumCircuit, position: int) -> tuple[QuantumCircuit, Quan
     return prefix, suffix
 
 
-def _propagated(circuit: QuantumCircuit, site: DopingSite) -> tuple[Pauli, Pauli]:
+def _propagated(circuit: QuantumCircuit, site: Wire) -> tuple[Pauli, Pauli]:
     """A site generator's forward (output) and backward (input) propagation via ``Pauli.evolve``.
 
     Deliberately a different implementation from the module's single tableau sweep.
@@ -120,7 +120,7 @@ def _checked_circuit() -> CheckedCircuit:
 class TestDopeCliffordCircuit(unittest.TestCase):
     """Tests for :func:`dope_clifford_circuit`."""
 
-    def _assert_irreducible(self, circuit: QuantumCircuit, sites: list[DopingSite]):
+    def _assert_irreducible(self, circuit: QuantumCircuit, sites: list[Wire]):
         """Independently verify that no pruning rewrite applies to the returned rotations."""
         forward = []
         backward = []

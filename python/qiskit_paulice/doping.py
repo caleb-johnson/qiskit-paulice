@@ -15,27 +15,14 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Literal, NamedTuple
+from typing import Literal
 
 import numpy as np
 from qiskit.circuit import ParameterVector, QuantumCircuit
 from qiskit.exceptions import QiskitError
 from qiskit.quantum_info import Clifford, PauliList
 
-from .checked_circuit import CheckedCircuit
-
-
-class DopingSite(NamedTuple):
-    """A circuit wire at which a doping ``RZ`` rotation is inserted.
-
-    Attributes:
-        qubit: Index of the qubit whose wire is doped.
-        after_instruction: Index (into ``circuit.data``) of the instruction the rotation
-            is inserted directly after; ``None`` places it before the first instruction.
-    """
-
-    qubit: int
-    after_instruction: int | None
+from .checked_circuit import CheckedCircuit, Wire
 
 
 def dope_clifford_circuit(
@@ -45,7 +32,7 @@ def dope_clifford_circuit(
     wires: Literal["all", "after_entangling", "before_entangling"] = "all",
     angle: float | None = np.pi / 4,
     seed: int | np.random.Generator | None = None,
-) -> tuple[QuantumCircuit, list[DopingSite]] | tuple[CheckedCircuit, list[DopingSite]]:
+) -> tuple[QuantumCircuit, list[Wire]] | tuple[CheckedCircuit, list[Wire]]:
     r"""Dope a Clifford circuit with ``RZ`` rotations.
 
     Each candidate wire is classified by conjugating the ``Z`` generator of a rotation placed
@@ -87,7 +74,7 @@ def dope_clifford_circuit(
     Returns:
             * **QuantumCircuit | CheckedCircuit** -- A copy of ``circuit`` with the rotations
               inserted
-            * **list[DopingSite]** -- The doped sites, sorted by circuit position
+            * **list[Wire]** -- The doped wires, sorted by circuit position
 
     Raises:
         ValueError: ``circuit`` contains a non-Clifford instruction or a non-terminal
@@ -155,7 +142,7 @@ def dope_clifford_circuit(
         if position < len(circuit.data):
             doped.append(circuit.data[position])
 
-    sites = [DopingSite(qubit, position - 1 if position else None) for position, qubit in chosen]
+    sites = [Wire(qubit, position - 1 if position else None) for position, qubit in chosen]
     if checked is not None:
         return replace(checked, circuit=doped), sites
     return doped, sites
