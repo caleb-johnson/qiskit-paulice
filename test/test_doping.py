@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 
 import numpy as np
 from qiskit.circuit import QuantumCircuit
@@ -26,7 +27,7 @@ from qiskit.quantum_info import (
     Statevector,
     random_clifford,
 )
-from qiskit_paulice import CheckedCircuit, Wire
+from qiskit_paulice import CheckedCircuit, DopedCircuit, Wire
 from qiskit_paulice.checks import add_pauli_checks
 from qiskit_paulice.noise_models import NoiseModel
 
@@ -268,9 +269,8 @@ class TestCheckedCircuitDoping(unittest.TestCase):
 
     def _assert_code_preserved(self, checked: CheckedCircuit, doped: CheckedCircuit, sites):
         """The doped circuit keeps the checks' metadata, wires, syndromes, and cumulants."""
-        self.assertIsInstance(doped, CheckedCircuit)
-        for field in ("target_qubits", "check_qubits", "check_support", "cost"):
-            self.assertEqual(getattr(doped, field), getattr(checked, field))
+        self.assertIsInstance(doped, DopedCircuit)
+        self.assertIs(doped.checked, checked)
         num_qubits = checked.circuit.num_qubits
         # Sites avoid ancilla wires and post-measurement wires.
         measure_pos = _measure_positions(checked.circuit)
@@ -281,7 +281,7 @@ class TestCheckedCircuitDoping(unittest.TestCase):
         original = _syndrome_values(checked, checked.circuit)
         for value in original:
             self.assertAlmostEqual(abs(value), 1.0, places=10)
-        np.testing.assert_allclose(_syndrome_values(doped, doped.circuit), original, atol=1e-10)
+        np.testing.assert_allclose(_syndrome_values(checked, doped.circuit), original, atol=1e-10)
         # Z on every doped wire commutes with each check's back-cumulant there.
         for site in sites:
             site_z = Pauli("I" * num_qubits)
@@ -300,6 +300,29 @@ class TestCheckedCircuitDoping(unittest.TestCase):
         sites = list(doped.doped_wires)
         self.assertGreater(len(sites), 0)
         self._assert_code_preserved(checked, doped, sites)
+
+    def test_doped_circuit_members(self):
+        """A DopedCircuit post-selects and boxes at any angle; its circuit is not re-analysed."""
+        checked = _checked_circuit()
+        for label, doped in (
+            ("T", checked.dope()),
+            ("S", checked.dope(angle=np.pi / 2)),
+            ("template", checked.dope(angle=None)),
+        ):
+            with self.subTest(doped=label):
+                self.assertIs(doped.checked, checked)
+                self.assertGreater(len(doped.doped_wires), 0)
+                accept = doped.get_postselection_method()
+                self.assertFalse(accept("0" * doped.circuit.num_qubits).any())
+                self.assertIn("box", doped.box().count_ops())
+                # Wrapping the doped circuit as a CheckedCircuit exposes the Clifford
+                # analyses, which reject non-Clifford angles and unbound parameters clearly.
+                rewrapped = replace(checked, circuit=doped.circuit)
+                if label == "S":
+                    self.assertGreater(len(rewrapped.uncovered_paulis), 0)
+                else:
+                    with self.assertRaisesRegex(ValueError, "Clifford|parameter"):
+                        _ = rewrapped.uncovered_paulis
 
     def test_template_preserves_code(self):
         """A parametrized template keeps every syndrome at any angles, for every wires rule."""

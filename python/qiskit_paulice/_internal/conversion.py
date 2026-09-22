@@ -74,7 +74,12 @@ def convert_to_rustiq_circuit(circuit):
             param = gate.operation.params[0]
             if isinstance(param, (np.complex128, np.complex64, complex)):
                 param = float(np.real(param))
-            param = param % (2 * np.pi)
+            try:
+                param = float(param) % (2 * np.pi)
+            except TypeError as exc:
+                raise ValueError(
+                    f"Unsupported gate {gate}: unbound parameter; bind it to a multiple of pi/2"
+                ) from exc
             if np.isclose(param, 0.0) or np.isclose(param, 2 * np.pi):
                 continue
             if np.isclose(param, np.pi / 2):
@@ -87,7 +92,10 @@ def convert_to_rustiq_circuit(circuit):
             if np.isclose(param, 3 * np.pi / 2):
                 emit(("Sd", qbits), inst_idx)
                 continue
-            emit(("RZ", qbits, str(param)), inst_idx)
+            raise ValueError(
+                f"Unsupported gate {gate}: non-Clifford rz angle {param:.4f} (not a multiple "
+                "of pi/2)"
+            )
         elif name == "I":
             continue
         elif name == "X":

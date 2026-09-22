@@ -123,8 +123,6 @@ class CheckedCircuit:
             together to give that check's syndrome bit.
         cost: The value of the cost function with respect to the checks in ``circuit``
         cost_metric: The metric used to evaluate check quality (``gamma`` or ``LER``)
-        doped_wires: The wires holding doping rotations inserted by :meth:`dope`, sorted by
-            circuit position. Empty if ``circuit`` is not doped.
     """
 
     circuit: QuantumCircuit
@@ -133,7 +131,6 @@ class CheckedCircuit:
     check_support: tuple[tuple[int, ...], ...] = ()
     cost: float | None = None
     cost_metric: str | None = None
-    doped_wires: tuple[Wire, ...] = ()
 
     def __post_init__(self) -> None:
         """Coerce mutable sequence inputs to tuples."""
@@ -152,6 +149,9 @@ class CheckedCircuit:
         Each entry is an ``UncoveredPauli(qubit, after_instruction, pauli)`` triple. Only
         input wires and wires immediately after 2-qubit gates are enumerated; errors after
         single qubit gates are folded into the next 2-qubit-gate wire.
+
+        Raises:
+            ValueError: :attr:`circuit` contains a non-Clifford instruction, e.g. it is doped.
         """
         check_picker = _build_check_picker(
             self.circuit,
@@ -322,7 +322,7 @@ class CheckedCircuit:
         wires: Literal["all", "after_entangling", "before_entangling"] = "all",
         angle: float | None = np.pi / 4,
         seed: int | np.random.Generator | None = None,
-    ) -> CheckedCircuit:
+    ) -> DopedCircuit:
         r"""Dope the circuit with ``RZ`` rotations.
 
         Rotations are inserted on wires where each one is irreducible, following the site
@@ -346,7 +346,7 @@ class CheckedCircuit:
             seed: Seed or generator for the random site selection.
 
         Returns:
-            A copy with the rotations inserted and :attr:`doped_wires` set.
+            The doped circuit, which keeps this circuit as :attr:`.DopedCircuit.checked`.
 
         Raises:
             ValueError: :attr:`circuit` contains a non-Clifford instruction or a
@@ -357,7 +357,7 @@ class CheckedCircuit:
         doped, sites = _dope_circuit(
             self.circuit, self.check_qubits, self.check_support, num_sites, wires, angle, seed
         )
-        return replace(self, circuit=doped, doped_wires=tuple(Wire(*site) for site in sites))
+        return DopedCircuit(doped, tuple(Wire(*site) for site in sites), self)
 
     def box(
         self,
@@ -508,6 +508,37 @@ class CheckedCircuit:
             if stratum_key != end:
                 out.barrier()
         return out
+
+
+@dataclass(frozen=True, eq=False)
+class DopedCircuit:
+    """A checked circuit with doping rotations inserted by :meth:`CheckedCircuit.dope`.
+
+    Doping preserves the checks, so post-selection and boxing carry over unchanged. Analyses
+    of the Clifford skeleton (:attr:`CheckedCircuit.uncovered_paulis`,
+    :meth:`CheckedCircuit.estimate_fault_rates`) belong to the undoped :attr:`checked`.
+
+    Attributes:
+        circuit: The doped circuit; parametrized if it was doped with ``angle=None``.
+        doped_wires: The wires holding the rotations, sorted by circuit position.
+        checked: The undoped :class:`CheckedCircuit` this was made from.
+    """
+
+    circuit: QuantumCircuit
+    doped_wires: tuple[Wire, ...]
+    checked: CheckedCircuit
+
+    def get_postselection_method(self) -> Callable[[str | np.ndarray], np.ndarray]:
+        """See :meth:`CheckedCircuit.get_postselection_method`; the checks are unchanged."""
+        return self.checked.get_postselection_method()
+
+    def box(
+        self,
+        payload_layers: Iterable[Iterable[tuple[int, int]]] | None = None,
+        **kwargs,
+    ) -> QuantumCircuit:
+        """See :meth:`CheckedCircuit.box`, applied to the doped circuit."""
+        return replace(self.checked, circuit=self.circuit).box(payload_layers, **kwargs)
 
 
 def _edge_to_layers(

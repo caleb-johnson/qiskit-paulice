@@ -10,6 +10,7 @@ Checked circuit (:mod:`qiskit_paulice.checked_circuit`)
 .. currentmodule:: qiskit_paulice.checked_circuit
 
 .. autoclass:: CheckedCircuit
+.. autoclass:: DopedCircuit
 .. autoclass:: Wire
    :exclude-members: qubit, after_instruction
 .. autoclass:: UncoveredPauli
