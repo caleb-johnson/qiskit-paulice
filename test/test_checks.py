@@ -157,7 +157,7 @@ class TestAddPauliChecksValidation(unittest.TestCase):
             (NoiseModel(gate_noise="bogus"), "Unrecognized"),
             (NoiseModel(gate_noise=True), "Unrecognized"),
             (NoiseModel(gate_noise=-1e-3), "Uniform gate_noise"),
-            (NoiseModel(gate_noise=3.0), "Uniform gate_noise"),
+            (NoiseModel(gate_noise=0.75), "Uniform gate_noise"),
             (NoiseModel(gate_noise=float("nan")), "Uniform gate_noise"),
             (NoiseModel(gate_noise=float("inf")), "Uniform gate_noise"),
             (NoiseModel(gate_noise=1e-3, readout_noise=0.5), "readout_noise"),
@@ -167,8 +167,8 @@ class TestAddPauliChecksValidation(unittest.TestCase):
                 add_pauli_checks(_clifford(), [1], noise, seed=0)
 
     def test_uniform_gate_noise_range(self):
-        """Uniform gate noise accepts any real number in [0, 3)."""
-        for gate_noise in (0, 0.0, 2.99, np.float32(1e-3), np.int64(0)):
+        """Uniform gate noise accepts any real number in [0, 0.75)."""
+        for gate_noise in (0, 0.0, 0.74, np.float32(1e-3), np.int64(0)):
             with self.subTest(gate_noise=gate_noise):
                 noise = NoiseModel(gate_noise=gate_noise, readout_noise=1e-2)
                 self.assertGreater(len(add_pauli_checks(_clifford(), [1], noise, seed=0)), 0)
@@ -414,6 +414,21 @@ class TestAddPauliChecksPermutations(unittest.TestCase):
                 )
                 _assert_variant_progression(self, result, expected_targets=[0])
                 self.assertIsInstance(result[-1].cost, float)
+
+    def test_every_method_reports_a_valid_check_support(self):
+        """Each method's ``check_support`` names the check's ancilla and is a stabilizer of the
+        output state, on a circuit that measures only some payload qubits so that qubit indices
+        differ from positions in the list of measured qubits."""
+        qc = _clifford().remove_final_measurements(inplace=False)
+        qc.add_register(ClassicalRegister(2, "meas"))
+        qc.measure([1, 2], [0, 1])
+        for method in ("windowed", "genetic", "windowed_genetic"):
+            with self.subTest(method=method):
+                final = add_pauli_checks(qc, [0, 1], _DEFAULT_NOISE, method=method, seed=0)[-1]
+                self.assertEqual(final.check_qubits, (3, 4))
+                for ancilla, support in zip(final.check_qubits, final.check_support, strict=True):
+                    self.assertIn(ancilla, support)
+                _assert_supports_are_stabilizers(self, final)
 
     def test_gate_wise_noise(self):
         """Per-edge dict noise keyed by ``(a, b)`` int pairs."""
